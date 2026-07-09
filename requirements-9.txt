@@ -1,0 +1,4 @@
+discord.py==2.4.0
+aiohttp==3.9.5
+Pillow==10.3.0
+Flask==3.0.3
