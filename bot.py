@@ -1,23 +1,4 @@
-#!/usr/bin/env python3
-"""
-North Files — Instagram Ban/Recovery Monitor Bot
---------------------------------------------------
-discord.py bot that watches PUBLIC Instagram accounts and posts for
-status changes (removed/banned <-> recovered/restored) and posts a
-branded embed the moment it detects a change.
-
-100% free stack: discord.py + aiohttp + Pillow. No paid APIs.
-
-Commands:
-    .remove <username>      watch an ACTIVE account, alert when it 404s
-    .recover <username>     watch a BANNED account, alert when it's back (200)
-    .postremove <link>      watch a LIVE post, alert when it's removed
-    .postrecover <link>     watch a REMOVED post, alert when it's restored
-    .watching               list everything currently being tracked
-
-Author: North Files | @Claxen
-"""
-
+#X: @Claxenn | Telegram: @Claxen
 import os
 import re
 import io
@@ -31,12 +12,10 @@ from discord.ext import commands, tasks
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFont
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+
 PREFIX = "."
-CHECK_INTERVAL_SECONDS = 90      # how often the full sweep runs
-PER_TARGET_DELAY_SECONDS = 3     # delay between individual IG requests in a sweep
+CHECK_INTERVAL_SECONDS = 90     
+PER_TARGET_DELAY_SECONDS = 3     
 REQUEST_TIMEOUT = 15
 
 BRAND_NAME = "North Files | @Claxen"
@@ -58,23 +37,13 @@ DESC_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ---------------------------------------------------------------------------
-# In-memory tracking state
-# ---------------------------------------------------------------------------
-# monitored_accounts[username_lower] = {
-#     "username": str, "mode": "remove" | "recover", "start_time": datetime,
-#     "channel_id": int, "author_id": int, "last_stats": dict
-# }
+
 monitored_accounts = {}
-# monitored_posts[shortcode] = { same shape + "url": str }
 monitored_posts = {}
 
-_state_lock = asyncio.Lock()  # guards the dicts above across command handlers + loop
+_state_lock = asyncio.Lock()  
 
 
-# ---------------------------------------------------------------------------
-# Parsing helpers
-# ---------------------------------------------------------------------------
 def parse_count(raw: str):
     raw = raw.strip().replace(",", "")
     multiplier = 1
@@ -104,11 +73,6 @@ def format_duration(start: datetime, end: datetime) -> str:
     hours, rem = divmod(total, 3600)
     minutes, seconds = divmod(rem, 60)
     return f"{hours} hour, {minutes} minutes, {seconds} seconds"
-
-
-# ---------------------------------------------------------------------------
-# Instagram fetchers (async, non-blocking)
-# ---------------------------------------------------------------------------
 async def fetch(session: aiohttp.ClientSession, url: str):
     try:
         async with session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
@@ -165,8 +129,6 @@ async def get_post_stats(session: aiohttp.ClientSession, shortcode: str) -> dict
     if status != 200:
         return {"status": status}
 
-    # Instagram sometimes returns 200 for a dead link but the page content
-    # signals it's gone. Treat that as removed too.
     lowered = (html or "").lower()
     if "page not found" in lowered or "sorry, this page" in lowered:
         return {"status": 404}
@@ -178,10 +140,6 @@ async def get_post_stats(session: aiohttp.ClientSession, shortcode: str) -> dict
 
     return {"status": 200, "thumb": thumb_url}
 
-
-# ---------------------------------------------------------------------------
-# Stats card image generation (Pillow)
-# ---------------------------------------------------------------------------
 def generate_stats_card(username: str, posts, followers, following) -> io.BytesIO:
     width, height = 600, 220
     bg = (18, 18, 22)
@@ -222,9 +180,6 @@ def generate_stats_card(username: str, posts, followers, following) -> io.BytesI
     return buf
 
 
-# ---------------------------------------------------------------------------
-# Embed builders
-# ---------------------------------------------------------------------------
 def build_account_embed(event: str, username: str, stats: dict, start_time: datetime):
     now = datetime.now(timezone.utc)
     duration = format_duration(start_time, now)
@@ -287,11 +242,8 @@ def build_post_embed(event: str, shortcode: str, url: str, stats: dict, start_ti
     return embed, None
 
 
-# ---------------------------------------------------------------------------
-# Bot setup
-# ---------------------------------------------------------------------------
 intents = discord.Intents.default()
-intents.message_content = True  # required to read prefix commands — enable in Dev Portal too
+intents.message_content = True  
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
@@ -314,8 +266,6 @@ async def on_command_error(ctx, error):
         await ctx.send(f"⚠️ Something went wrong: `{error}`")
 
 
-# --- .remove ----------------------------------------------------------------
-@bot.command(name="remove")
 async def cmd_remove(ctx, username: str):
     username = username.lstrip("@").strip()
     key = username.lower()
@@ -348,7 +298,7 @@ async def cmd_remove(ctx, username: str):
     await ctx.send(f"🔍 Watching **@{username}** — I'll alert this channel the moment it goes down.")
 
 
-# --- .recover ----------------------------------------------------------------
+
 @bot.command(name="recover")
 async def cmd_recover(ctx, username: str):
     username = username.lstrip("@").strip()
@@ -377,9 +327,6 @@ async def cmd_recover(ctx, username: str):
         }
 
     await ctx.send(f"🔍 Watching **@{username}** for recovery — I'll alert this channel the moment it's back.")
-
-
-# --- .postremove ---------------------------------------------------------------
 @bot.command(name="postremove")
 async def cmd_postremove(ctx, link: str):
     shortcode = extract_shortcode(link)
@@ -413,9 +360,6 @@ async def cmd_postremove(ctx, link: str):
         }
 
     await ctx.send(f"🔍 Watching post `{shortcode}` for removal.")
-
-
-# --- .postrecover ---------------------------------------------------------------
 @bot.command(name="postrecover")
 async def cmd_postrecover(ctx, link: str):
     shortcode = extract_shortcode(link)
@@ -448,7 +392,6 @@ async def cmd_postrecover(ctx, link: str):
     await ctx.send(f"🔍 Watching post `{shortcode}` for recovery.")
 
 
-# --- .watching ---------------------------------------------------------------
 @bot.command(name="watching")
 async def cmd_watching(ctx):
     async with _state_lock:
@@ -474,9 +417,6 @@ async def cmd_watching(ctx):
     await ctx.send(embed=embed)
 
 
-# ---------------------------------------------------------------------------
-# Background monitor loop
-# ---------------------------------------------------------------------------
 @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
 async def monitor_loop():
     async with _state_lock:
@@ -528,7 +468,7 @@ async def monitor_loop():
 
             await asyncio.sleep(PER_TARGET_DELAY_SECONDS)
 
-        # --- posts ---
+        
         for shortcode in post_keys:
             async with _state_lock:
                 entry = monitored_posts.get(shortcode)
@@ -568,9 +508,7 @@ async def before_monitor_loop():
     await bot.wait_until_ready()
 
 
-# ---------------------------------------------------------------------------
-# Flask keep-alive server (for Render + UptimeRobot)
-# ---------------------------------------------------------------------------
+#fake port for render
 app = Flask(__name__)
 
 
@@ -589,9 +527,7 @@ def keep_alive():
     t.start()
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+#env
 if __name__ == "__main__":
     token = os.environ.get("DISCORD_BOT_TOKEN")
     if not token:
@@ -599,3 +535,6 @@ if __name__ == "__main__":
 
     keep_alive()
     bot.run(token)
+
+
+#end
