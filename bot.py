@@ -30,7 +30,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 # ---------------------------------------------------------------------------
 # Config
@@ -104,7 +104,11 @@ def format_duration(start: datetime, end: datetime) -> str:
     total = int((end - start).total_seconds())
     hours, rem = divmod(total, 3600)
     minutes, seconds = divmod(rem, 60)
-    return f"{hours} hour, {minutes} minutes, {seconds} seconds"
+
+    def plural(n, word):
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    return f"{plural(hours, 'hour')}, {plural(minutes, 'minute')}, {plural(seconds, 'second')}"
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +170,6 @@ async def get_post_stats(session: aiohttp.ClientSession, post_url: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Stats card image generation (Pillow)
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # Profile screenshot generation (Pillow) — mimics the iPhone IG profile tab
 # ---------------------------------------------------------------------------
 async def fetch_image_bytes(url: str):
@@ -228,163 +229,113 @@ def _circle_mask_paste(base: Image.Image, pic_bytes, box, fallback_letter: str):
     base.paste(circle, (x0, y0), mask)
 
 
-def draw_grid_icon(draw, cx, cy, size, color):
-    s = size // 3
-    for row in range(3):
-        for col in range(3):
-            x = cx - size // 2 + col * s
-            y = cy - size // 2 + row * s
-            draw.rectangle([x, y, x + s - 3, y + s - 3], outline=color, width=2)
-
-
-def draw_reels_icon(draw, cx, cy, size, color):
-    half = size // 2
-    draw.rounded_rectangle([cx - half, cy - half, cx + half, cy + half], radius=6, outline=color, width=2)
-    draw.polygon(
-        [(cx - 5, cy - 8), (cx - 5, cy + 8), (cx + 8, cy)],
-        fill=color,
-    )
-
-
-def draw_tagged_icon(draw, cx, cy, size, color):
-    half = size // 2
-    draw.rounded_rectangle([cx - half, cy - half, cx + half, cy + half], radius=6, outline=color, width=2)
-    draw.ellipse([cx - 6, cy - 8, cx + 6, cy + 4], outline=color, width=2)
-    draw.arc([cx - 10, cy + 2, cx + 10, cy + 16], start=200, end=340, fill=color, width=2)
-
-
 async def generate_profile_screenshot(username: str, stats: dict) -> io.BytesIO:
-    W, H = 720, 1080
-    bg = (0, 0, 0)
-    fg = (245, 245, 245)
-    muted = (142, 142, 147)
-    accent = (0, 149, 246)  # IG blue
-    border = (38, 38, 40)
+    """
+    Renders an Instagram-style link-preview card the way it looks on desktop
+    browsers: a square avatar on the left, with username, verified badge,
+    Follow button, and follower/following stats stacked to the right.
+    """
+    W, H = 680, 220
+    fg = (255, 255, 255)
+    muted = (168, 168, 176)
+    accent = (0, 149, 246)  # Instagram blue
+    panel = (18, 18, 21)
+    border = (40, 40, 46)
 
     fonts = _load_fonts()
     pic_bytes = await fetch_image_bytes(stats["pic"]) if stats.get("pic") else None
 
-    img = Image.new("RGB", (W, H), color=bg)
-    draw = ImageDraw.Draw(img)
+    base = Image.new("RGBA", (W, H), panel + (255,))
+    draw = ImageDraw.Draw(base)
+    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=18, outline=border, width=2)
 
-    # --- iPhone status bar -------------------------------------------------
-    draw.text((28, 16), "9:41", font=fonts["bold_sm"], fill=fg)
-    # signal dots
-    for i in range(4):
-        h = 6 + i * 3
-        draw.rectangle([W - 110 + i * 8, 28 - h, W - 110 + i * 8 + 5, 28], fill=fg)
-    # wifi arc
-    draw.arc([W - 74, 10, W - 54, 30], start=225, end=315, fill=fg, width=2)
-    # battery
-    draw.rounded_rectangle([W - 46, 14, W - 20, 28], radius=3, outline=fg, width=2)
-    draw.rectangle([W - 19, 18, W - 16, 24], fill=fg)
-    draw.rectangle([W - 43, 17, W - 30, 25], fill=fg)
+    # --- avatar, left side, vertically centered -----------------------------
+    avatar_size = 150
+    avatar_x, avatar_y = 25, (H - avatar_size) // 2
+    _circle_mask_paste(
+        base, pic_bytes,
+        (avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size),
+        username[:1].upper(),
+    )
 
-    # --- header --------------------------------------------------------------
-    header_y = 60
-    draw.line([(24, 20), (14, header_y - 5), (24, header_y - 30)], fill=fg, width=3, joint="curve")
-    name_font = fonts["bold_md"]
+    text_x = avatar_x + avatar_size + 28
+    top_y = 34
+
+    # --- username row: name + verified badge + chevron + Follow button ------
     name_text = username
-    bbox = draw.textbbox((0, 0), name_text, font=name_font)
-    tw = bbox[2] - bbox[0]
-    draw.text(((W - tw) / 2, header_y - 20), name_text, font=name_font, fill=fg)
+    draw.text((text_x, top_y), name_text, font=fonts["bold_lg"], fill=fg)
+    nb = draw.textbbox((text_x, top_y), name_text, font=fonts["bold_lg"])
+    x = nb[2] + 8
+
     if stats.get("is_verified"):
-        vb_x = (W + tw) / 2 + 8
-        draw.ellipse([vb_x, header_y - 18, vb_x + 20, header_y + 2], fill=accent)
-        draw.line([vb_x + 5, header_y - 8, vb_x + 9, header_y - 3, vb_x + 15, header_y - 13], fill=(255, 255, 255), width=2, joint="curve")
-    for i in range(3):
-        draw.ellipse([W - 40, header_y - 15 + i * 6, W - 36, header_y - 11 + i * 6], fill=fg)
+        vb_size = 22
+        vb_y = top_y + 6
+        draw.ellipse([x, vb_y, x + vb_size, vb_y + vb_size], fill=accent)
+        draw.line(
+            [x + 5, vb_y + 11, x + 9, vb_y + 15, x + 17, vb_y + 5],
+            fill=(255, 255, 255), width=3, joint="curve",
+        )
+        x += vb_size + 8
 
-    draw.line([(0, header_y + 20), (W, header_y + 20)], fill=border, width=1)
+    draw.text((x, top_y + 3), "›", font=fonts["reg_md"], fill=muted)
 
-    # --- profile picture + stats row -----------------------------------------
-    pic_size = 170
-    pic_x, pic_y = 32, header_y + 45
-    _circle_mask_paste(img, pic_bytes, (pic_x, pic_y, pic_x + pic_size, pic_y + pic_size), username[:1].upper())
+    # Follow pill button, right-aligned on the same row as the username
+    btn_text = "Follow"
+    btn_font = fonts["bold_sm"]
+    bb = draw.textbbox((0, 0), btn_text, font=btn_font)
+    btn_w = (bb[2] - bb[0]) + 34
+    btn_h = 38
+    btn_x0 = W - 25 - btn_w
+    btn_y0 = top_y - 2
+    draw.rounded_rectangle([btn_x0, btn_y0, btn_x0 + btn_w, btn_y0 + btn_h], radius=8, fill=accent)
+    tb = draw.textbbox((0, 0), btn_text, font=btn_font)
+    tw, th = tb[2] - tb[0], tb[3] - tb[1]
+    draw.text(
+        (btn_x0 + (btn_w - tw) / 2, btn_y0 + (btn_h - th) / 2 - tb[1]),
+        btn_text, font=btn_font, fill=(255, 255, 255),
+    )
 
-    def fmt(v):
-        return "0" if v is None else f"{v:,}"
+    # --- full name (secondary line, only if different from username) -------
+    row_y = top_y + 42
+    full_name = (stats.get("full_name") or "").strip()
+    if full_name and full_name.lower() != username.lower():
+        draw.text((text_x, row_y), full_name, font=fonts["reg_md"], fill=muted)
+        row_y += 30
 
-    stat_labels = [("Posts", fmt(stats.get("posts"))), ("Followers", fmt(stats.get("followers"))), ("Following", fmt(stats.get("following")))]
-    stat_col_w = (W - (pic_x + pic_size + 24) - 24) // 3
-    sx = pic_x + pic_size + 24
-    sy = pic_y + 35
-    for label, value in stat_labels:
-        vb = draw.textbbox((0, 0), value, font=fonts["bold_md"])
-        vw = vb[2] - vb[0]
-        draw.text((sx + (stat_col_w - vw) / 2, sy), value, font=fonts["bold_md"], fill=fg)
-        lb = draw.textbbox((0, 0), label, font=fonts["reg_sm"])
-        lw = lb[2] - lb[0]
-        draw.text((sx + (stat_col_w - lw) / 2, sy + 36), label, font=fonts["reg_sm"], fill=muted)
-        sx += stat_col_w
+    # --- followers / following stats line -----------------------------------
+    def fmt_ig(n):
+        if n is None:
+            n = 0
+        if n >= 1_000_000:
+            s = f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}M"
+        if n >= 10_000:
+            s = f"{n / 1_000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}K"
+        return f"{n:,}"
 
-    # --- full name + bio ------------------------------------------------------
-    text_y = pic_y + pic_size + 16
-    full_name = stats.get("full_name") or username
-    draw.text((32, text_y), full_name, font=fonts["bold_sm"], fill=fg)
-    text_y += 30
+    followers_str = fmt_ig(stats.get("followers"))
+    following_str = fmt_ig(stats.get("following"))
+    sx = text_x
 
-    bio = (stats.get("biography") or "").strip()
-    if bio:
-        words = bio.split()
-        line = ""
-        max_width = W - 64
-        for word in words:
-            test = f"{line} {word}".strip()
-            tb = draw.textbbox((0, 0), test, font=fonts["reg_sm"])
-            if tb[2] - tb[0] > max_width and line:
-                draw.text((32, text_y), line, font=fonts["reg_sm"], fill=fg)
-                text_y += 24
-                line = word
-            else:
-                line = test
-        if line:
-            draw.text((32, text_y), line, font=fonts["reg_sm"], fill=fg)
-            text_y += 24
+    draw.text((sx, row_y), followers_str, font=fonts["bold_sm"], fill=fg)
+    sb = draw.textbbox((sx, row_y), followers_str, font=fonts["bold_sm"])
+    sx = sb[2] + 6
+    draw.text((sx, row_y + 2), "followers", font=fonts["reg_sm"], fill=muted)
+    sb2 = draw.textbbox((sx, row_y + 2), "followers", font=fonts["reg_sm"])
+    sx = sb2[2] + 20
 
-    # --- buttons ---------------------------------------------------------------
-    btn_y = text_y + 16
-    btn_h = 56
-    draw.rounded_rectangle([32, btn_y, W // 2 - 8, btn_y + btn_h], radius=8, fill=(38, 38, 40))
-    draw.rounded_rectangle([W // 2 + 8, btn_y, W - 32, btn_y + btn_h], radius=8, fill=(38, 38, 40))
+    draw.text((sx, row_y), following_str, font=fonts["bold_sm"], fill=fg)
+    sb3 = draw.textbbox((sx, row_y), following_str, font=fonts["bold_sm"])
+    sx = sb3[2] + 6
+    draw.text((sx, row_y + 2), "following", font=fonts["reg_sm"], fill=muted)
 
-    def center_text(txt, x0, x1, y0, y1, font, color=fg):
-        b = draw.textbbox((0, 0), txt, font=font)
-        w, h = b[2] - b[0], b[3] - b[1]
-        draw.text((x0 + ((x1 - x0) - w) / 2, y0 + ((y1 - y0) - h) / 2 - b[1]), txt, font=font, fill=color)
-
-    center_text("Message", 32, W // 2 - 8, btn_y, btn_y + btn_h, fonts["bold_sm"])
-    center_text("Following", W // 2 + 8, W - 32, btn_y, btn_y + btn_h, fonts["bold_sm"])
-
-    # --- tab icon row ------------------------------------------------------------
-    tabs_y = btn_y + btn_h + 30
-    draw.line([(0, tabs_y - 14), (W, tabs_y - 14)], fill=border, width=1)
-    icon_size = 30
-    third = W // 3
-    draw_grid_icon(draw, third // 2, tabs_y + icon_size // 2, icon_size, fg)
-    draw_reels_icon(draw, third + third // 2, tabs_y + icon_size // 2, icon_size, muted)
-    draw_tagged_icon(draw, 2 * third + third // 2, tabs_y + icon_size // 2, icon_size, muted)
-    draw.rectangle([0, tabs_y + icon_size + 12, third, tabs_y + icon_size + 15], fill=fg)
-
-    # --- post grid placeholders (real thumbnails aren't pulled to save API credits) ---
-    grid_top = tabs_y + icon_size + 24
-    gap = 2
-    tile = (W - gap * 2) // 3
-    tones = [(24, 24, 27), (20, 20, 23), (28, 28, 31)]
-    i = 0
-    y = grid_top
-    while y + tile <= H - 10:
-        for col in range(3):
-            x = col * (tile + gap)
-            color = tones[i % len(tones)]
-            draw.rectangle([x, y, x + tile, y + tile], fill=color)
-            # small camera-corner glyph so tiles read as "posts" not blank boxes
-            draw.rectangle([x + tile - 26, y + 8, x + tile - 10, y + 20], outline=muted, width=1)
-            i += 1
-        y += tile + gap
+    corner_mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(corner_mask).rounded_rectangle([0, 0, W - 1, H - 1], radius=18, fill=255)
+    base.putalpha(corner_mask)
 
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    base.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -471,8 +422,9 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Missing argument. Usage: `{PREFIX}{ctx.command} <value>`")
+    if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument, commands.TooManyArguments)):
+        usage = f"{PREFIX}{ctx.command.qualified_name} {ctx.command.signature}".strip()
+        await ctx.send(f"⚠️ Wrong usage. Correct format:\n`{usage}`")
     elif isinstance(error, commands.CommandNotFound):
         return
     elif isinstance(error, commands.NotOwner):
@@ -679,7 +631,17 @@ def parse_count_arg(raw: str):
         return None
 
 
-async def _fire_custom_alert(ctx, event: str, username, followers, following, posts, name, pfp, duration):
+def parse_yes_no(raw: str):
+    """Parses yes/no (also y/n, true/false) into a bool, or None if unrecognized."""
+    v = raw.strip().lower()
+    if v in ("yes", "y", "true", "1"):
+        return True
+    if v in ("no", "n", "false", "0"):
+        return False
+    return None
+
+
+async def _fire_custom_alert(ctx, event: str, username, followers, following, posts, name, pfp, is_verified, duration):
     username = clean_username(username)
     if not VALID_USERNAME_RE.match(username):
         await ctx.send(f"⚠️ `{username}` doesn't look like a valid username.")
@@ -690,6 +652,11 @@ async def _fire_custom_alert(ctx, event: str, username, followers, following, po
     posts_n = parse_count_arg(posts)
     if None in (followers_n, following_n, posts_n):
         await ctx.send("⚠️ Followers/Following/Posts need to be numbers (e.g. `1234`, `1.2k`, `4.5m`).")
+        return
+
+    verified = parse_yes_no(is_verified)
+    if verified is None:
+        await ctx.send("⚠️ `<is_verified>` must be `yes` or `no`.")
         return
 
     duration = parse_duration(duration)
@@ -707,12 +674,11 @@ async def _fire_custom_alert(ctx, event: str, username, followers, following, po
         "pic": pfp_url,
         "full_name": name,
         "biography": "",
-        "is_verified": False,
+        "is_verified": verified,
     }
     fake_start_time = datetime.now(timezone.utc) - duration
 
     embed, file = await build_account_embed(event, username, fake_stats, fake_start_time)
-    embed.set_footer(text=embed.footer.text + " • TEST")
     if file:
         await ctx.send(embed=embed, file=file)
     else:
@@ -721,14 +687,14 @@ async def _fire_custom_alert(ctx, event: str, username, followers, following, po
 
 @bot.command(name="customremove")
 @commands.is_owner()
-async def cmd_customremove(ctx, username: str, followers: str, following: str, posts: str, name: str, pfp: str, duration: str):
-    await _fire_custom_alert(ctx, "removed", username, followers, following, posts, name, pfp, duration)
+async def cmd_customremove(ctx, username: str, followers: str, following: str, posts: str, name: str, pfp: str, is_verified: str, duration: str):
+    await _fire_custom_alert(ctx, "removed", username, followers, following, posts, name, pfp, is_verified, duration)
 
 
 @bot.command(name="customrecover")
 @commands.is_owner()
-async def cmd_customrecover(ctx, username: str, followers: str, following: str, posts: str, name: str, pfp: str, duration: str):
-    await _fire_custom_alert(ctx, "recovered", username, followers, following, posts, name, pfp, duration)
+async def cmd_customrecover(ctx, username: str, followers: str, following: str, posts: str, name: str, pfp: str, is_verified: str, duration: str):
+    await _fire_custom_alert(ctx, "recovered", username, followers, following, posts, name, pfp, is_verified, duration)
 
 
 # ---------------------------------------------------------------------------
